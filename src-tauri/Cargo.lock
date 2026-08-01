@@ -2232,10 +2232,11 @@ dependencies = [
 
 [[package]]
 name = "photo-wall"
-version = "1.0.0"
+version = "1.2.0"
 dependencies = [
  "image",
  "kamadak-exif",
+ "percent-encoding",
  "rayon",
  "serde",
  "serde_json",

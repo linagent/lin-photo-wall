@@ -1475,7 +1475,7 @@ async function prepareFolder(dir) {
   let startedHere = false;
   const unProg = await listen("thumb-progress", e => { if (!wasStarted && !startedHere) showPrep(e.payload.done, e.payload.total); });
   const unReady = await listen("thumb-ready", e => {
-    const u = convertFileSrc(e.payload);
+    const u = convertFileSrc(e.payload, "thumb");
     ready.push(u);
     if (!wasStarted) {
       if (!startedHere && ready.length >= Math.max(12, Math.ceil(CONFIG.行数 * CONFIG.列数 * 0.75))) {
@@ -1485,7 +1485,7 @@ async function prepareFolder(dir) {
   });
   try {
     const all = await invoke("prepare_folder", { dir });
-    const urls = all.map(convertFileSrc);
+    const urls = all.map(p => convertFileSrc(p, "thumb"));
     if (!urls.length) throw new Error("empty");
     if (!wasStarted) {
       if (startedHere) { photos = urls; }            /* 已提前开播:补齐完整清单 */

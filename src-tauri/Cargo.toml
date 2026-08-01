@@ -1,6 +1,6 @@
 [package]
 name = "photo-wall"
-version = "1.0.0"
+version = "1.2.0"
 description = "Apple TV 风格照片墙"
 edition = "2021"
 
@@ -16,6 +16,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 kamadak-exif = "0.5"
 rayon = "1"
 walkdir = "2"
+percent-encoding = "2"
 
 [profile.release]
 opt-level = "z"

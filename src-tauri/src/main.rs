@@ -191,6 +191,50 @@ fn clear_thumb_cache(app: AppHandle) -> Result<u64, String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Serve generated thumbnails through a dedicated protocol. Only canonical JPEG files
+        // inside this application's thumbnail cache are readable through the webview.
+        .register_uri_scheme_protocol("thumb", |ctx, request| {
+            let decoded =
+                percent_encoding::percent_decode_str(request.uri().path().trim_start_matches('/'))
+                    .decode_utf8_lossy()
+                    .to_string();
+
+            let requested = PathBuf::from(decoded).canonicalize();
+            let cache = ctx
+                .app_handle()
+                .path()
+                .app_cache_dir()
+                .ok()
+                .map(|path| path.join("thumbs"))
+                .and_then(|path| path.canonicalize().ok());
+
+            let allowed = match (&requested, &cache) {
+                (Ok(path), Some(cache)) => {
+                    path.starts_with(cache)
+                        && path.extension().and_then(|ext| ext.to_str()) == Some("jpg")
+                }
+                _ => false,
+            };
+
+            if !allowed {
+                return tauri::http::Response::builder()
+                    .status(403)
+                    .body(Vec::new())
+                    .unwrap();
+            }
+
+            match fs::read(requested.unwrap()) {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .header("Content-Type", "image/jpeg")
+                    .header("Cache-Control", "public, max-age=31536000, immutable")
+                    .body(bytes)
+                    .unwrap(),
+                Err(_) => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         .invoke_handler(tauri::generate_handler![prepare_folder, clear_thumb_cache])
         .run(tauri::generate_context!())
         .expect("error while running photo wall");
