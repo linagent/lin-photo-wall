@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "photo wall default capability",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen"
+  ]
+}

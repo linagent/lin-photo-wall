@@ -1,0 +1,1730 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>照片墙 Photo Wall</title>
+<!--
+  ============================================================
+  照片墙 · Apple TV 风格幻灯片(可编辑版)
+  ------------------------------------------------------------
+  · 直接双击本文件在浏览器打开,选择照片文件夹即可全屏播放
+  · 想调整效果:用记事本打开本文件,修改下方 CONFIG 里的数字,
+    保存后回到浏览器按 F5 刷新即可看到变化
+  · Esc 退出全屏
+  ============================================================
+-->
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; background:#000; overflow:hidden; }
+  body { cursor:none; font-family:"Segoe UI","Microsoft YaHei",sans-serif; }
+  body.showcursor, body.picking { cursor:default; }
+
+  #grid {
+    position:fixed; inset:0;
+    display:grid; gap:0;
+  }
+  .cell { position:relative; overflow:hidden; background:#0a0a0a; }
+  .cell img.base {
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    object-fit:cover; display:block;
+    -webkit-user-drag:none;
+  }
+  /* 开场时整墙先是黑的,浪花翻过才点亮 */
+  .cell.dark img.base { opacity:0; }
+
+  /* 飞行图层:翻滚/翻转的照片面板在这里跨格移动 */
+  #fx { position:fixed; inset:0; pointer-events:none; overflow:hidden; z-index:40; }
+  .pwrap { position:absolute; }
+  .p3d  { position:absolute; inset:0; perspective:1400px; }
+  .prot {
+    position:absolute; inset:0;
+    transform-style:preserve-3d;
+    will-change:transform, filter, opacity;
+  }
+  .prot img {
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    object-fit:cover; display:block;
+    backface-visibility:visible;
+    -webkit-user-drag:none;
+  }
+  .prot.mir img { transform:scaleY(-1); }
+  .prot.mirH img { transform:scaleX(-1); }
+
+  /* 启动界面(选择照片文件夹) */
+  #picker {
+    position:fixed; inset:0; z-index:90;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    background:#000; overflow:hidden;
+    color:#eee; text-align:center;
+  }
+  /* 暗化的主题拼贴做底,上面罩一层径向渐暗,沉浸感拉满 */
+  #pickerBg {
+    position:absolute; inset:0; z-index:0;
+    display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr);
+    gap:4px; filter:brightness(.42) saturate(.85);
+  }
+  #pickerBg img { width:100%; height:100%; object-fit:cover; display:block; }
+  #pickerVeil {
+    position:absolute; inset:0; z-index:1;
+    background:radial-gradient(ellipse at 50% 44%, rgba(0,0,0,.38) 0%, rgba(0,0,0,.9) 78%);
+  }
+  #pickerBody {
+    position:relative; z-index:2;
+    display:flex; flex-direction:column; align-items:center;
+  }
+  #picker h1 { font-size:54px; font-weight:600; letter-spacing:.2em; margin-bottom:10px;
+               text-shadow:0 4px 30px rgba(0,0,0,.8); }
+  #picker .sub { color:#b9b9c0; font-size:15px; letter-spacing:.14em; }
+  #picker .tlabel { color:#87878f; font-size:13px; letter-spacing:.18em; margin:34px 0 12px; }
+  #pickerThemes { display:flex; gap:14px; margin-bottom:34px; }
+  #picker .tcard {
+    width:152px; padding:0; border-radius:14px; overflow:hidden; cursor:pointer;
+    border:2px solid rgba(255,255,255,.12); background:rgba(20,20,26,.72);
+    transition:transform .2s, border-color .2s;
+  }
+  #picker .tcard:hover { transform:translateY(-3px); }
+  #picker .tcard.on { border-color:#2997ff; box-shadow:0 0 24px rgba(41,151,255,.35); }
+  #picker .tcard img { width:100%; height:94px; object-fit:cover; display:block; }
+  #picker .tcard span { display:block; color:#ddd; font-size:13px; letter-spacing:.08em; padding:9px 0 10px; }
+  #picker button#btnPick, #picker button#btnDemo {
+    font-size:16px; padding:13px 0; width:340px;
+    border:0; border-radius:12px; cursor:pointer;
+    background:#2997ff; color:#fff; letter-spacing:.1em;
+  }
+  #picker button#btnDemo { background:rgba(44,44,52,.92); color:#ccc; margin-top:12px; }
+  #picker button:hover { filter:brightness(1.15); }
+  #picker .hint { color:#6c6c74; font-size:12.5px; margin-top:26px; line-height:2; }
+  #picker.drag { outline:3px dashed #2997ff; outline-offset:-24px; }
+
+  /* 右上角设置齿轮 + 设置面板 */
+  #gear {
+    position:fixed; top:22px; right:24px; z-index:95;
+    width:44px; height:44px; border-radius:50%; border:0;
+    font-size:20px; cursor:pointer;
+    background:rgba(20,20,20,.62); color:#ddd;
+    backdrop-filter:blur(12px);
+    opacity:0; pointer-events:none; transition:opacity .35s;
+  }
+  body.showcursor #gear, body.panelopen #gear { opacity:1; pointer-events:auto; }
+  body.picking #gear, body.picking #settings { display:none; }
+  body.panelopen { cursor:default; }
+  #gear:hover { background:rgba(64,64,70,.75); }
+
+  #settings {
+    position:fixed; top:76px; right:24px; z-index:96;
+    width:344px; max-height:calc(100vh - 110px); overflow-y:auto;
+    background:rgba(18,18,22,.9); backdrop-filter:blur(20px);
+    border:1px solid rgba(255,255,255,.1); border-radius:16px;
+    padding:20px 22px 16px; color:#ddd; font-size:15px;
+    display:none;
+  }
+  body.panelopen #settings { display:block; }
+  #settings h2 { font-size:15px; font-weight:600; letter-spacing:.12em; margin-bottom:4px; }
+  #settings .note { color:#777; font-size:13px; margin-bottom:10px; }
+  #settings .sec { margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,.08);
+                   color:#888; font-size:13px; letter-spacing:.1em; }
+  #settings .presets { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin:12px 0 4px; }
+  #settings .preset {
+    border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:11px 0;
+    background:#26262c; color:#ccc; font-size:14px; letter-spacing:.08em; cursor:pointer;
+  }
+  #settings .preset:hover { filter:brightness(1.2); }
+  #settings .preset.on { background:rgba(41,151,255,.18); border-color:#2997ff; color:#eaf4ff; }
+  /* 圆形快捷键:换一墙 / 添加照片 / 全屏 */
+  #settings .quick { display:flex; justify-content:space-around; margin:18px 0 6px; }
+  #settings .qitem { display:flex; flex-direction:column; align-items:center; gap:8px;
+                     color:#aaa; font-size:13px; }
+  #settings .qbtn {
+    width:56px; height:56px; border-radius:50%; cursor:pointer;
+    border:1px solid rgba(255,255,255,.14); background:#26262c; color:#ddd;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #settings .qbtn:hover { filter:brightness(1.3); }
+  /* 演示主题切换行 */
+  #settings .themesRow { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin:14px 0 2px; }
+  #settings .theme {
+    border:1px solid rgba(255,255,255,.14); border-radius:22px; padding:10px 0;
+    background:transparent; color:#ccc; font-size:14px; letter-spacing:.05em; cursor:pointer;
+  }
+  #settings .theme:hover { filter:brightness(1.25); }
+  #settings .theme.on { background:rgba(41,151,255,.16); border-color:#2997ff; color:#eaf4ff; }
+  #settings #adv { margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,.08); }
+  #settings #adv > summary { cursor:pointer; color:#888; font-size:13px; letter-spacing:.1em;
+                             list-style:none; user-select:none; }
+  #settings #adv > summary::after { content:" \25be"; color:#666; }
+  #settings #adv[open] > summary::after { content:" \25b4"; }
+  #settings .row { display:flex; align-items:center; gap:10px; margin:9px 0; }
+  #settings .row label { flex:0 0 110px; color:#aaa; }
+  #settings .row input[type=range] { flex:1; accent-color:#2997ff; min-width:0; }
+  #settings .row output { flex:0 0 40px; text-align:right; color:#eee; font-variant-numeric:tabular-nums; }
+  #settings .btns { display:flex; gap:10px; margin-top:16px; }
+  #settings .btns button {
+    flex:1; border:0; border-radius:10px; padding:10px 0; cursor:pointer;
+    font-size:14px; letter-spacing:.05em; background:#2a2a30; color:#ccc;
+  }
+  #settings .btns button.primary { background:#2997ff; color:#fff; }
+  #settings .btns button:hover { filter:brightness(1.15); }
+
+  #toast {
+    position:fixed; left:50%; bottom:36px;
+    transform:translateX(-50%) translateY(20px);
+    background:rgba(20,20,20,.72);
+    color:#eee; font-size:15px; letter-spacing:.06em;
+    padding:10px 22px; border-radius:22px;
+    backdrop-filter:blur(12px);
+    opacity:0; transition:opacity .4s, transform .4s;
+    pointer-events:none; z-index:99;
+  }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  #prep {
+    position:fixed; inset:0; z-index:120; display:none;
+    align-items:center; justify-content:center;
+    background:rgba(0,0,0,.72); backdrop-filter:blur(8px);
+  }
+  #prep .box { display:flex; flex-direction:column; align-items:center; gap:18px; color:#ddd; font-size:15px; letter-spacing:.08em; }
+  #prep .spin { width:34px; height:34px; border-radius:50%; border:3px solid rgba(255,255,255,.18); border-top-color:#2997ff; animation:prepspin 1s linear infinite; }
+  @keyframes prepspin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body class="picking">
+<div id="grid"></div>
+<div id="fx"></div>
+<div id="picker">
+  <div id="pickerBg"></div>
+  <div id="pickerVeil"></div>
+  <div id="pickerBody">
+    <h1>照 片 墙</h1>
+    <div class="sub">把回忆装进一面会呼吸的墙</div>
+    <div class="tlabel">选择一个演示主题</div>
+    <div id="pickerThemes"></div>
+    <button id="btnPick">选择本机照片</button>
+    <button id="btnDemo" class="ghost">使用所选主题体验</button>
+    <div class="hint">照片仅在本机播放,不会上传 · 选择后自动全屏,按 Esc 退出<br>也可以直接把照片文件夹拖进本窗口</div>
+  </div>
+  <input id="dirInput" type="file" webkitdirectory multiple style="display:none">
+</div>
+<div id="toast">按 Esc 退出全屏</div>
+<div id="prep"><div class="box"><div class="spin"></div><div class="txt">正在准备照片…</div></div></div>
+<button id="gear" title="播放设置">⚙</button>
+<div id="settings">
+  <h2>播放设置</h2>
+  <div class="note">调整立即生效 · 自动记住,下次打开还是这套</div>
+  <div class="presets">
+    <button class="preset" data-preset="安静相册">安静相册</button>
+    <button class="preset" data-preset="平衡默认">平衡默认</button>
+    <button class="preset" data-preset="活跃派对">活跃派对</button>
+    <button class="preset" data-preset="电影质感">电影质感</button>
+  </div>
+  <div class="quick">
+    <div class="qitem"><button id="btnWaveNow" class="qbtn" title="换一墙"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 13c2.5-6 5-6 7.5 0s5 6 7.5 0 2.5-6 5-6"/></svg></button><span>换一墙</span></div>
+    <div class="qitem"><button id="btnAddPhotos" class="qbtn" title="添加照片"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button><span>添加照片</span></div>
+    <div class="qitem"><button id="btnFullscreen" class="qbtn" title="全屏"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button><span>全屏</span></div>
+  </div>
+  <div class="themesRow">
+    <button class="theme" data-theme="山海之间">山海之间</button>
+    <button class="theme" data-theme="城市夜色">城市夜色</button>
+    <button class="theme" data-theme="暖阳林间">暖阳林间</button>
+  </div>
+  <details id="adv"><summary>高级设置</summary>
+  <div class="row"><label>网格行数</label><input type="range" id="sRows" min="2" max="6" step="1"><output id="oRows"></output></div>
+  <div class="row"><label>网格列数</label><input type="range" id="sCols" min="3" max="10" step="1"><output id="oCols"></output></div>
+  <div class="sec">节 奏</div>
+  <div class="row"><label>安静最短(秒)</label><input type="range" id="sQmin" min="0.5" max="5" step="0.1"><output id="oQmin"></output></div>
+  <div class="row"><label>安静最长(秒)</label><input type="range" id="sQmax" min="1" max="9" step="0.1"><output id="oQmax"></output></div>
+  <div class="row"><label>每阵最多(个)</label><input type="range" id="sBurst" min="1" max="6" step="1"><output id="oBurst"></output></div>
+  <div class="row"><label>翻滚浪花(分)</label><input type="range" id="sWave" min="0" max="10" step="1"><output id="oWave"></output></div>
+  <div class="row"><label>落叶浪花(分)</label><input type="range" id="sLeaf" min="0" max="10" step="1"><output id="oLeaf"></output></div>
+  <div class="sec">动画比例(相对权重)</div>
+  <div class="row"><label>翻滚下落</label><input type="range" id="sW1" min="0" max="10" step="1"><output id="oW1"></output></div>
+  <div class="row"><label>横向翻滚</label><input type="range" id="sW2" min="0" max="10" step="1"><output id="oW2"></output></div>
+  <div class="row"><label>顶点旋转</label><input type="range" id="sW3" min="0" max="10" step="1"><output id="oW3"></output></div>
+  <div class="row"><label>落叶飘</label><input type="range" id="sW4" min="0" max="10" step="1"><output id="oW4"></output></div>
+  <div class="row"><label>缓慢缩放</label><input type="range" id="sW5" min="0" max="10" step="1"><output id="oW5"></output></div>
+  <div class="row"><label>缩放时长(秒)</label><input type="range" id="sKb" min="3" max="15" step="0.5"><output id="oKb"></output></div>
+  </details>
+  <div class="btns">
+    <button id="btnReset">恢复默认设置</button><button id="btnClearCache">清理缩略图缓存</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   CONFIG · 想改效果就改这里(改完保存,浏览器按 F5 刷新)
+   ============================================================ */
+const CONFIG = {
+  行数: 4,                 // 网格行数
+  列数: 7,                 // 网格列数(1920x1080 下 7 列 ≈ 正方形格)
+  安静最短: 1200,          // 两阵动画之间的安静时间(毫秒,最短)
+  安静最长: 3400,          // 两阵动画之间的安静时间(毫秒,最长)
+  每阵动画数: [1, 3],      // 每阵连续触发几个动画 [最少, 最多]
+  阵内间隔: [300, 750],    // 一阵内相邻两个动画的间隔(毫秒)
+  翻滚单步时长: 520,       // 翻滚下落:起步第一格的用时(毫秒);滚起来后每格自动提速到约一半
+  顶点旋转基础时长: 500,   // 顶点旋转:基础用时(毫秒),角度越大自动越久
+  顶点旋转角度: [90, 180, 270], // 顶点旋转可能的旋转角度(每次随机挑一个)
+  落叶时长: 1700,          // 落叶飘:整个飘落过程用时(毫秒)
+  翻滚到底概率: 0.45,      // 翻滚有多大概率一路翻出屏幕,其余则翻 1~N 格后停下淡出
+  缓慢缩放时长: 8000,       // 缓慢缩放(Ken Burns):镜头推近一张照片的总时长(毫秒)
+  动画比例: { 翻滚: 0.2, 横向翻滚: 0.1, 顶点旋转: 0.3, 落叶: 0.2, 缓慢缩放: 0.2 }, // 各动画出现的相对比例
+  格子冷却: 6000,          // 同一格两次动画的最小间隔(毫秒)
+  开场浪花: true,          // 打开时是否播放"从左上到右下"的整墙翻滚浪花
+  浪花列间隔: 225,         // 浪花中相邻两列启动的间隔(毫秒)
+  浪花重复分钟: 1,         // 每隔约几分钟来一次浪花全场大更替(0 = 只在开场播一次)
+  落叶浪花分钟: 2,         // 每隔约几分钟来一次左上到右下的落叶飘全场更替(0 = 关闭)
+  落叶浪花斜向间隔: 240,   // 落叶浪花:相邻斜线(行+列)之间的启动间隔(毫秒)
+  顶点接力概率: .35,     // 顶点旋转升级成"接力"的概率:180°翻进斜下邻格,一棒顶一棒传到底
+};
+/* ============================================================ */
+
+/* 记住出厂默认值(供设置面板"恢复默认"用) */
+const DEFAULTS = JSON.parse(JSON.stringify(CONFIG));
+
+/* 运行时设置:面板里调过的参数存在浏览器本地,下次打开自动恢复 */
+const LS_KEY = "photowall.settings.v1";
+try {
+  const saved = JSON.parse(localStorage.getItem(LS_KEY) || "null");
+  if (saved && typeof saved === "object") {
+    for (const k of Object.keys(saved)) {
+      if (k === "动画比例") Object.assign(CONFIG.动画比例, saved[k]);
+      else if (k in CONFIG) CONFIG[k] = saved[k];
+    }
+  }
+} catch (e) {}
+function saveSettings() {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      行数: CONFIG.行数, 列数: CONFIG.列数,
+      安静最短: CONFIG.安静最短, 安静最长: CONFIG.安静最长,
+      每阵动画数: CONFIG.每阵动画数, 浪花重复分钟: CONFIG.浪花重复分钟,
+      落叶浪花分钟: CONFIG.落叶浪花分钟,
+      缓慢缩放时长: CONFIG.缓慢缩放时长, 动画比例: CONFIG.动画比例,
+    }));
+  } catch (e) {}
+}
+
+let ROWS = CONFIG.行数, COLS = CONFIG.列数;
+
+/* ================= photo pool ================= */
+let photos = [];
+let started = false;
+let isDemo = false;   // 当前照片库是否为演示主题
+const decoded = new Set();
+const recentQueue = [];
+
+/* 演示主题:三套截然不同的氛围,开场页与设置面板均可切换 */
+const DEMO_THEME_NAMES = ["山海之间", "城市夜色", "暖阳林间"];
+let demoTheme = DEMO_THEME_NAMES[0];
+try {
+  const t = localStorage.getItem(LS_KEY + ".theme");
+  if (DEMO_THEME_NAMES.includes(t)) demoTheme = t;
+} catch (e) {}
+
+/* 演示素材:程序生成的"抽象摄影",按主题成套混排——
+   山海之间(日落/海面/远山)、城市夜色(天际线/光斑/极光)、
+   暖阳林间(晨雾/沙丘/暖阳),统一压暗四角,质感向成品靠拢 */
+function makeDemoPhotos(n, themeName) {
+  const W = 960, H = 720;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+
+  function sky(ctx, stops) {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    for (const [p, c] of stops) g.addColorStop(p, c);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  function glow(ctx, x, y, r, color) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, color); g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  function ridge(ctx, base, amp, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(0, base);
+    const k = rnd(.004, .009), ph = rnd(0, 6);
+    for (let x = 0; x <= W; x += 36)
+      ctx.lineTo(x, base + Math.sin(x * k + ph) * amp + rnd(-amp, amp) * .35);
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+  }
+  function grain(ctx) {
+    ctx.globalAlpha = .04;
+    for (let i = 0; i < 650; i++) {
+      ctx.fillStyle = Math.random() < .5 ? "#000" : "#fff";
+      ctx.fillRect(rnd(0, W), rnd(0, H), 1.2, 1.2);
+    }
+    ctx.globalAlpha = 1;
+  }
+  /* 四角压暗:一层含蓄的暗角,让每张图都像认真调过色 */
+  function vignette(ctx) {
+    const g = ctx.createRadialGradient(W/2, H*.45, Math.min(W,H)*.38, W/2, H/2, Math.max(W,H)*.72);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(6,5,12,.4)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+
+  function sunset(ctx) {
+    const hor = H * rnd(.6, .72);
+    sky(ctx, [[0, `hsl(${rnd(230,260)} 45% 16%)`], [.45, `hsl(${rnd(340,358)} 55% 38%)`],
+              [.72, `hsl(${rnd(18,34)} 85% 55%)`], [1, `hsl(${rnd(30,42)} 90% 68%)`]]);
+    glow(ctx, W * rnd(.3, .7), hor, rnd(180, 300), "rgba(255,214,150,.8)");
+    ctx.globalAlpha = .16; ctx.fillStyle = "#2a1830";
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      ctx.ellipse(rnd(0, W), hor * rnd(.3, .85), rnd(140, 320), rnd(8, 20), 0, 0, 6.3);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(20,12,26,.92)"; ctx.fillRect(0, hor + rnd(20, 50), W, H);
+  }
+  function ocean(ctx) {
+    const hor = H * rnd(.38, .5);
+    sky(ctx, [[0, `hsl(${rnd(195,215)} 45% 72%)`], [1, `hsl(${rnd(200,220)} 50% 88%)`]]);
+    const g = ctx.createLinearGradient(0, hor, 0, H);
+    g.addColorStop(0, `hsl(${rnd(195,210)} 55% 42%)`);
+    g.addColorStop(1, `hsl(${rnd(210,230)} 60% 22%)`);
+    ctx.fillStyle = g; ctx.fillRect(0, hor, W, H - hor);
+    glow(ctx, W * rnd(.35, .65), hor, rnd(150, 260), "rgba(255,240,210,.55)");
+    ctx.fillStyle = "rgba(255,255,255,.32)";
+    for (let i = 0; i < 90; i++) {
+      const d = Math.pow(Math.random(), 1.6), y = hor + d * (H - hor);
+      ctx.fillRect(rnd(0, W), y, 4 + d * rnd(8, 40), 1.6);
+    }
+  }
+  function mountains(ctx) {
+    const hue = rnd(210, 280);
+    sky(ctx, [[0, `hsl(${hue} 35% 78%)`], [1, `hsl(${rnd(20,40)} 60% 80%)`]]);
+    glow(ctx, W * rnd(.4, .6), H * .5, rnd(160, 260), "rgba(255,230,190,.55)");
+    for (let i = 0; i < 4; i++)
+      ridge(ctx, H * (.42 + i * .15), rnd(24, 56),
+            `hsl(${hue} ${22 + i * 6}% ${58 - i * 13}%)`);
+  }
+  function cityBokeh(ctx) {
+    sky(ctx, [[0, "hsl(230 35% 8%)"], [1, `hsl(${rnd(250,290)} 30% 16%)`]]);
+    for (let i = 0; i < 46; i++) {
+      const warm = Math.random() < .62, r = rnd(8, 46);
+      ctx.globalAlpha = rnd(.12, .5);
+      ctx.filter = `blur(${(r / 8).toFixed(1)}px)`;
+      ctx.fillStyle = warm ? `hsl(${rnd(28,48)} 95% ${rnd(55,70)}%)`
+                           : `hsl(${rnd(180,220)} 80% ${rnd(55,75)}%)`;
+      ctx.beginPath(); ctx.arc(rnd(0, W), rnd(0, H), r, 0, 6.3); ctx.fill();
+    }
+    ctx.filter = "none"; ctx.globalAlpha = 1;
+  }
+  function forestMist(ctx) {
+    const hue = rnd(90, 150);
+    sky(ctx, [[0, `hsl(${hue} 18% 82%)`], [1, `hsl(${hue} 22% 55%)`]]);
+    for (let band = 0; band < 3; band++) {
+      const depth = band / 2;
+      ctx.globalAlpha = .55 + depth * .45;
+      ctx.fillStyle = `hsl(${hue} ${26 + depth * 14}% ${34 - depth * 16}%)`;
+      for (let i = 0; i < 7 + band * 3; i++) {
+        const top = rnd(-40, H * .25);
+        ctx.fillRect(rnd(0, W), top, rnd(6, 14) + depth * 10, H - top);
+      }
+      if (band < 2) {
+        ctx.globalAlpha = 1;
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(rnd(.3, .45), "rgba(235,240,238,0)");
+        g.addColorStop(rnd(.55, .7), "rgba(235,240,238,.7)");
+        g.addColorStop(1, "rgba(235,240,238,.12)");
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  function dunes(ctx) {
+    const hue = rnd(28, 42);
+    sky(ctx, [[0, `hsl(${hue} 70% 88%)`], [1, `hsl(${hue} 75% 72%)`]]);
+    let base = H * rnd(.35, .5);
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = `hsl(${hue - i * 3} ${62 - i * 6}% ${66 - i * 14}%)`;
+      ctx.beginPath(); ctx.moveTo(0, base + rnd(-40, 40));
+      ctx.bezierCurveTo(W * .3, base - rnd(40, 120), W * .6, base + rnd(30, 110), W, base + rnd(-50, 50));
+      ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+      base += (H - base) * .38;
+    }
+    glow(ctx, W * rnd(.6, .8), H * rnd(.15, .3), rnd(140, 220), "rgba(255,250,235,.5)");
+  }
+
+  function skyline(ctx) {
+    sky(ctx, [[0, "hsl(228 42% 9%)"], [.62, `hsl(${rnd(255,285)} 34% 17%)`], [1, `hsl(${rnd(18,34)} 45% 24%)`]]);
+    glow(ctx, W * rnd(.3, .7), H * .78, rnd(220, 340), "rgba(255,168,92,.28)");
+    /* 两层楼宇剪影,前层亮着零星暖窗 */
+    for (let layer = 0; layer < 2; layer++) {
+      const front = layer === 1;
+      ctx.fillStyle = front ? "hsl(231 24% 7%)" : "hsl(233 20% 13%)";
+      let x = -rnd(0, 30);
+      while (x < W) {
+        const bw = rnd(42, 110), bh = H * (front ? rnd(.2, .42) : rnd(.12, .3));
+        ctx.fillRect(x, H - bh, bw, bh);
+        if (front) {
+          ctx.fillStyle = "rgba(255,199,120,.55)";
+          for (let wy = H - bh + 9; wy < H - 14; wy += 15)
+            for (let wx = x + 6; wx < x + bw - 8; wx += 13)
+              if (Math.random() < .16) ctx.fillRect(wx, wy, 3.2, 4.6);
+          ctx.fillStyle = "hsl(231 24% 7%)";
+        }
+        x += bw + rnd(4, 26);
+      }
+    }
+  }
+  function aurora(ctx) {
+    sky(ctx, [[0, "hsl(252 45% 7%)"], [1, "hsl(222 40% 13%)"]]);
+    for (let i = 0; i < 110; i++) {
+      ctx.globalAlpha = rnd(.12, .7);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(rnd(0, W), rnd(0, H * .8), 1.4, 1.4);
+    }
+    ctx.globalAlpha = 1;
+    /* 三条极光带,重度模糊出丝绒质感 */
+    for (let b = 0; b < 3; b++) {
+      const hue = rnd(118, 172), baseY = H * rnd(.18, .46), amp = rnd(28, 76);
+      const k = rnd(.003, .006), ph = rnd(0, 6), thick = rnd(60, 140);
+      ctx.filter = "blur(18px)";
+      ctx.fillStyle = `hsla(${hue}, 80%, 55%, .32)`;
+      ctx.beginPath(); ctx.moveTo(0, baseY + Math.sin(ph) * amp);
+      for (let x = 0; x <= W; x += 24) ctx.lineTo(x, baseY + Math.sin(x * k + ph) * amp);
+      for (let x = W; x >= 0; x -= 24) ctx.lineTo(x, baseY + Math.sin(x * k + ph) * amp + thick);
+      ctx.closePath(); ctx.fill();
+      ctx.filter = "none";
+    }
+    ridge(ctx, H * .84, 24, "hsl(230 22% 6%)");
+  }
+
+  const themeGens = {
+    山海之间: [sunset, ocean, mountains],
+    城市夜色: [skyline, cityBokeh, aurora],
+    暖阳林间: [forestMist, dunes, sunset],
+  };
+  const gens = themeGens[themeName || demoTheme] || themeGens[DEMO_THEME_NAMES[0]];
+  const list = [];
+  for (let i = 0; i < n; i++) {
+    const cvs = document.createElement("canvas");
+    cvs.width = W; cvs.height = H;
+    const ctx = cvs.getContext("2d");
+    gens[i % gens.length](ctx);
+    vignette(ctx);
+    grain(ctx);
+    list.push(cvs.toDataURL("image/jpeg", .84));
+  }
+  return list;
+}
+
+function preload(url) {
+  if (decoded.has(url)) return Promise.resolve();
+  return new Promise(res => {
+    const im = new Image();
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; decoded.add(url); res(); } };
+    im.onload = () => { (im.decode ? im.decode().catch(()=>{}) : Promise.resolve()).then(done); };
+    im.onerror = done;
+    im.src = url;
+    setTimeout(done, 4500);
+  });
+}
+
+/* ================= grid ================= */
+const grid = document.getElementById("grid");
+const fx = document.getElementById("fx");
+let cells = [];        // flat list
+let cellAt = [];       // cellAt[row][col]
+let layoutGen = 0;     // 布局代号:重建布局后,飞行中的旧动画据此中止
+let revealPending = false; // 开场浪花还没播完时为 true(此间重建布局保持黑底)
+
+function currentlyShown() { return new Set(cells.map(c => c.photoIdx)); }
+
+function pickPhoto(exclude, avoid) {
+  const shown = currentlyShown();
+  const total = photos.length;
+  let candidates = [];
+  for (let i = 0; i < total; i++) {
+    if (i === exclude) continue;
+    if (avoid && avoid.has(i)) continue;          // 同一批预选内部不重复
+    if (total > cells.length && shown.has(i)) continue;
+    if (total > cells.length + 10 && recentQueue.includes(i)) continue;
+    candidates.push(i);
+  }
+  if (!candidates.length)
+    for (let i = 0; i < total; i++) if (i !== exclude) candidates.push(i);
+  if (!candidates.length) return exclude;
+  const idx = candidates[Math.floor(Math.random()*candidates.length)];
+  recentQueue.push(idx);
+  if (recentQueue.length > Math.min(20, Math.floor(total/3))) recentQueue.shift();
+  return idx;
+}
+
+function shuffled(n) {
+  const a = [...Array(n).keys()];
+  for (let i = n-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function buildLayout(dark) {
+  layoutGen++;
+  grid.innerHTML = "";
+  fx.innerHTML = "";
+  cells = [];
+  cellAt = Array.from({length: ROWS}, () => []);
+  grid.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${ROWS}, 1fr)`;
+  const order = shuffled(photos.length);
+  let oi = 0;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const el = document.createElement("div");
+      el.className = dark ? "cell dark" : "cell";
+      const img = document.createElement("img");
+      img.className = "base";
+      const pIdx = order[oi % order.length]; oi++;
+      img.src = photos[pIdx];
+      el.appendChild(img);
+      grid.appendChild(el);
+      const cell = { el, img, photoIdx:pIdx, row:r, col:c, busy:false, lastAnim:0 };
+      cells.push(cell);
+      cellAt[r][c] = cell;
+    }
+  }
+  if (!dark) {
+    const enter = shuffled(cells.length);
+    enter.forEach((ci, rank) => {
+      cells[ci].el.animate(
+        [{opacity:0}, {opacity:1}],
+        {duration:500, delay:rank*35, easing:"ease-out", fill:"backwards"}
+      );
+    });
+  }
+}
+
+/* ================= helpers ================= */
+function rectOf(cell) { return cell.el.getBoundingClientRect(); }
+
+function makePanel(url, rect) {
+  const wrap = document.createElement("div");
+  wrap.className = "pwrap";
+  wrap.style.left = rect.left + "px";
+  wrap.style.top = rect.top + "px";
+  wrap.style.width = rect.width + "px";
+  wrap.style.height = rect.height + "px";
+  const p3d = document.createElement("div");
+  p3d.className = "p3d";
+  const prot = document.createElement("div");
+  prot.className = "prot";
+  const im = document.createElement("img");
+  im.src = url;
+  prot.appendChild(im);
+  p3d.appendChild(prot);
+  wrap.appendChild(p3d);
+  fx.appendChild(wrap);
+  return { wrap, prot };
+}
+
+function swapCell(cell, newIdx) {
+  cell.img.src = photos[newIdx];
+  cell.photoIdx = newIdx;
+  cell.lastAnim = performance.now();
+}
+
+/* ============ 动画一:翻滚下落(下翻页/落叶) ============
+   旧照片以底边为轴向下翻转 180°,背面(倒置)扣在下一行上,
+   然后继续一行行往下翻滚,直到滚出屏幕底部;
+   被它盖住的每一格都会在掰开时露出新照片。 */
+async function animTumble(cell, opts = {}) {
+  const { reveal = false, fromWave = false, maxFlips = Infinity,
+          panelIdx: givenPanel, bandPicks: givenBands } = opts;
+  const gen = layoutGen;
+  /* 浪花刚过的格子把"冷却计时"随机回拨:浪花落幕后零星动画能马上接上,不空场 */
+  const stamp = () => performance.now() - (fromWave ? Math.random()*CONFIG.格子冷却*.7 : 0);
+  const rowH = window.innerHeight / ROWS;
+  const rect = rectOf(cell);
+  /* 开场揭示模式:面板用一张额外的照片,滚过之处点亮各格自己的照片 */
+  const panelIdx = (givenPanel != null) ? givenPanel : (reveal ? pickPhoto(-1) : cell.photoIdx);
+  await preload(photos[panelIdx]);
+  if (gen !== layoutGen) return;
+  const avail = ROWS - cell.row;
+  const flips = Math.max(1, Math.min(avail, maxFlips));
+  const partial = flips < avail;                 // 停在墙上,不翻出屏幕
+  const touched = [];
+
+  /* 关键顺滑点:起飞前把沿途每一格要换的新照片(含停留格)全部
+     选好、解码好,飞行途中零等待,列与列的接替才平顺 */
+  const bandPick = [];
+  if (!reveal) {
+    if (givenBands) {
+      /* 浪花统一预选预载好的照片,直接取用,列节拍精确 */
+      for (let k = 0; k < flips; k++) bandPick[k] = givenBands[cell.row + k] ?? -1;
+    } else {
+      const avoid = new Set();
+      for (let k = 0; k < flips; k++) {
+        const bandRow = cell.row + k;
+        const target = (k === 0) ? cell : (cellAt[bandRow] && cellAt[bandRow][cell.col]);
+        bandPick[k] = target ? pickPhoto(target.photoIdx, avoid) : -1;
+        if (bandPick[k] >= 0) avoid.add(bandPick[k]);
+      }
+      await Promise.all(bandPick.filter(i => i >= 0).map(i => preload(photos[i])));
+      if (gen !== layoutGen) return;
+    }
+  }
+
+  const { wrap, prot } = makePanel(photos[panelIdx], rect);
+  if (reveal) {
+    wrap.animate([{opacity:0},{opacity:1}], {duration:130, easing:"ease-out", fill:"backwards"});
+  }
+  prot.style.transformOrigin = "50% 100%";
+
+  /* 物理节奏(翻页时钟/多米诺):速度必须连续,衔接处角速度完全相等 ——
+     起步从静止用平方缓入加速(末速恰为匀速段的速度),
+     中段纯线性匀速且时长减半,停墙时用对称的平方缓出刹住;
+     同一次翻滚内步长恒定,随机只在整次之间 */
+  const stepBase = fromWave ? CONFIG.翻滚单步时长 / 1.2   // 浪花翻滚提速 1.2 倍
+                            : CONFIG.翻滚单步时长 + Math.random()*120;
+
+  for (let k = 0; k < flips; k++) {
+    const bandRow = cell.row + k;
+    const target = (k === 0) ? cell : cellAt[bandRow][cell.col];
+    if (target && (k === 0 || !target.busy)) {
+      if (k > 0) target.busy = true;
+      touched.push(target);
+      if (reveal) {
+        target.el.classList.remove("dark");     // 被浪花翻过,点亮这一格
+      } else {
+        swapCell(target, bandPick[k]);
+      }
+    }
+    /* 每步的时长与曲线按物理角色分配:
+       cubic-bezier(.33,0,.67,.33) 恰好是 y=t²(平方加速,末速=2×匀速),
+       cubic-bezier(.33,.67,.67,1) 恰好是 y=1-(1-t)²(平方减速,初速=2×匀速),
+       中段线性且时长减半 —— 三段衔接处角速度完全相等,无顿挫 */
+    const isFirst = k === 0, isLast = k === flips - 1;
+    let dur, easing;
+    if (isFirst && isLast && partial) {        // 只翻一格就停:完整加减速,像翻页时钟的一次翻页
+      dur = stepBase * 1.4; easing = "cubic-bezier(.45,0,.55,1)";
+    } else if (isFirst) {                      // 起步:从静止平方加速
+      dur = stepBase;       easing = "cubic-bezier(.33,0,.67,.33)";
+    } else if (isLast && partial) {            // 停墙:对称平方减速刹住
+      dur = stepBase;       easing = "cubic-bezier(.33,.67,.67,1)";
+    } else {                                   // 中段/滚出屏幕:恒角速度直线滚
+      dur = stepBase * .5;  easing = "linear";
+    }
+    const anim = prot.animate([
+      { transform:"rotateX(0deg)",    filter:"brightness(1)" },
+      { transform:"rotateX(-90deg)",  filter:"brightness(.8)", offset:.5 },
+      { transform:"rotateX(-180deg)", filter:"brightness(.97)" }
+    ], { duration:dur, easing, fill:"forwards" });
+    /* 翻之前已按奇偶算好落地位相:奇数次翻滚落地本该是倒像,
+       就在最后一步转到 90°(侧棱朝屏、宽度归零)时无感把背面
+       预倒过来,落地自然是正像,看不到任何换图动作 */
+    if (isLast && partial && !prot.classList.contains("mir"))
+      setTimeout(() => prot.classList.add("mir"), dur * (isFirst ? .5 : .3));
+    await anim.finished.catch(()=>{});
+    if (gen !== layoutGen) { wrap.remove(); return; }   // 布局已重建,中止
+    wrap.style.top = (rect.top + rowH*(k+1)) + "px";
+    prot.getAnimations().forEach(a => a.cancel());
+    prot.classList.toggle("mir");
+  }
+
+  if (partial) {
+    /* 落地即定格:位相已预算,落地就是正像,
+       携带的照片就地留下,不再换图 */
+    const restCell = cellAt[cell.row + flips] && cellAt[cell.row + flips][cell.col];
+    if (restCell && !restCell.busy && !reveal) {
+      restCell.busy = true;
+      touched.push(restCell);
+      swapCell(restCell, panelIdx);
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    } else {
+      /* 罕见:落点正忙或揭示模式,面板淡出让位 */
+      const fade = wrap.animate([{opacity:1},{opacity:0}],
+        {duration:300, easing:"ease-out", fill:"forwards"});
+      await fade.finished.catch(()=>{});
+    }
+  }
+  wrap.remove();
+  touched.forEach(c => { c.busy = false; c.lastAnim = stamp(); });
+}
+
+/* ============ 动画一B:横向翻滚 ============
+   与下翻完全同一套动作,只是沿水平方向:
+   以左/右边缘为轴一格格翻过去,可能翻 1 格、几格,或翻出屏幕。 */
+async function animTumbleH(cell) {
+  const gen = layoutGen;
+  const colW = window.innerWidth / COLS;
+  const rect = rectOf(cell);
+  /* 不翻出屏幕:贴边只能朝里翻;最远翻到边缘列就停 */
+  const dir = cell.col >= COLS - 1 ? -1
+            : cell.col <= 0        ?  1
+            : (Math.random() < .5 ? 1 : -1);  // 1=向右翻, -1=向左翻
+  const maxSteps = dir > 0 ? COLS - 1 - cell.col : cell.col;
+  const n = Math.random() < CONFIG.翻滚到底概率 ? maxSteps
+          : 1 + Math.floor(Math.random()*maxSteps);
+  const partial = true;                       // 永远停在屏内定格
+  const touched = [];
+
+  const bandPick = [];
+  const avoid = new Set();
+  for (let k = 0; k < n; k++) {
+    const col = cell.col + dir*k;
+    const target = (k === 0) ? cell : (cellAt[cell.row] && cellAt[cell.row][col]);
+    bandPick[k] = target ? pickPhoto(target.photoIdx, avoid) : -1;
+    if (bandPick[k] >= 0) avoid.add(bandPick[k]);
+  }
+  await Promise.all(bandPick.filter(i => i >= 0).map(i => preload(photos[i])));
+  if (gen !== layoutGen) { cell.busy = false; return; }
+
+  const carryIdx = cell.photoIdx;             // 翻滚体携带的照片:落地就定格留下
+  const { wrap, prot } = makePanel(photos[carryIdx], rect);
+  prot.style.transformOrigin = dir > 0 ? "100% 50%" : "0% 50%";
+
+  /* 与纵向翻滚同一套物理节奏:加速→匀速→减速,衔接处角速度相等 */
+  const stepBase = CONFIG.翻滚单步时长 + Math.random()*120;
+
+  for (let k = 0; k < n; k++) {
+    const col = cell.col + dir*k;
+    const target = (k === 0) ? cell : cellAt[cell.row][col];
+    if (target && (k === 0 || !target.busy)) {
+      if (k > 0) target.busy = true;
+      touched.push(target);
+      swapCell(target, bandPick[k]);
+    }
+    const isFirst = k === 0, isLast = k === n - 1;
+    let dur, easing;
+    if (isFirst && isLast && partial) {
+      dur = stepBase * 1.4; easing = "cubic-bezier(.45,0,.55,1)";
+    } else if (isFirst) {
+      dur = stepBase;       easing = "cubic-bezier(.33,0,.67,.33)";
+    } else if (isLast && partial) {
+      dur = stepBase;       easing = "cubic-bezier(.33,.67,.67,1)";
+    } else {
+      dur = stepBase * .5;  easing = "linear";
+    }
+    const anim = prot.animate([
+      { transform:"rotateY(0deg)",            filter:"brightness(1)" },
+      { transform:`rotateY(${dir*90}deg)`,    filter:"brightness(.8)", offset:.5 },
+      { transform:`rotateY(${dir*180}deg)`,   filter:"brightness(.97)" }
+    ], { duration:dur, easing, fill:"forwards" });
+    /* 最后一步若按当前镜像态落地会是反像,就在转到 90°
+       (侧棱朝屏、宽度归零)那一刻无感换回正像,保证定格无缝 */
+    if (isLast && partial && !prot.classList.contains("mirH"))
+      setTimeout(() => prot.classList.add("mirH"), dur * (isFirst ? .5 : .3));
+    await anim.finished.catch(()=>{});
+    if (gen !== layoutGen) { wrap.remove(); return; }
+    wrap.style.left = (rect.left + colW*dir*(k+1)) + "px";
+    prot.getAnimations().forEach(a => a.cancel());
+    prot.classList.toggle("mirH");
+  }
+
+  if (partial) {
+    /* 落地即定格:翻过来的照片就地留下,不再换图 */
+    const restCell = cellAt[cell.row] && cellAt[cell.row][cell.col + dir*n];
+    if (restCell && !restCell.busy) {
+      restCell.busy = true;
+      touched.push(restCell);
+      swapCell(restCell, carryIdx);
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    } else {
+      /* 罕见:落点正忙,翻滚体只好淡出让位 */
+      const fade = wrap.animate([{opacity:1},{opacity:0}],
+        {duration:300, easing:"ease-out", fill:"forwards"});
+      await fade.finished.catch(()=>{});
+    }
+  }
+  wrap.remove();
+  touched.forEach(c => { c.busy = false; c.lastAnim = performance.now(); });
+}
+
+/* ============ 动画二:顶点旋转 ============
+   新照片以自己的一个顶点为轴心,在墙面内旋转 90°/180°/270°
+   (每次角度随机)扫进来,途中压过邻格、带着投影,
+   转正落位的那一刻完成换图。 */
+async function animPivot(cell) {
+  const newIdx = pickPhoto(cell.photoIdx);
+  await preload(photos[newIdx]);
+  if (!document.body.contains(cell.el)) { cell.busy = false; return; }
+  const rect = rectOf(cell);
+  const { wrap, prot } = makePanel(photos[newIdx], rect);
+  prot.style.filter = "drop-shadow(0 14px 30px rgba(0,0,0,.45))";
+  /* 轴心顶点:四个角随机挑一个 */
+  const corners = ["0% 0%", "100% 0%", "0% 100%", "100% 100%"];
+  prot.style.transformOrigin = corners[Math.floor(Math.random()*corners.length)];
+  const angles = CONFIG.顶点旋转角度;
+  const angle = angles[Math.floor(Math.random()*angles.length)];
+  const sign = Math.random() < .5 ? -1 : 1;
+  const a0 = sign * angle;
+  /* 重力只加在运动过程:恒定角加速度从静止下落,
+     cubic-bezier(.33,0,.67,.33) 恰好是 y=t² —— 全程只加速不减速,
+     落位瞬间戛然而止(非弹性碰撞),不回摆。
+     下落用时按物理 T∝√角度:角度越大落得越久 */
+  const dur = CONFIG.顶点旋转基础时长 * Math.sqrt(angle/90) + Math.random()*120;
+  const anim = prot.animate(
+    [ { transform:`rotate(${a0}deg)` }, { transform:"rotate(0deg)" } ],
+    { duration:dur, easing:"cubic-bezier(.33,0,.67,.33)", fill:"forwards" });
+  /* 动态模糊跟随速度:越落越快越糊,落位瞬间立即清晰 */
+  const im = prot.querySelector("img");
+  im.animate([
+    { filter:"blur(0px)",   offset:0 },
+    { filter:"blur(2.4px)", offset:.94 },
+    { filter:"blur(0px)",   offset:1 }
+  ], { duration:dur, easing:"cubic-bezier(.33,0,.67,.33)", fill:"forwards" });
+  await anim.finished.catch(()=>{});
+  swapCell(cell, newIdx);
+  requestAnimationFrame(() => requestAnimationFrame(() => wrap.remove()));
+  cell.busy = false;
+}
+
+/* ============ 动画二b:顶点接力 ============
+   方块"贴地翻跟头"式滚动:A 以右下角为轴逆时针原地转 180°,
+   从正下方掠过,恰好落在右下斜邻格(绕共享角点转 180° 正好把
+   格子映射到斜邻格);被压住的照片立即以另一侧底角反向再转 180°
+   ……逆顺交替,多米诺式一路顶点旋转传到底行。
+   照片跟格子一体旋转;落位瞬间底下换上正立照片、旋转体同帧退场,
+   峰值角速度+动态模糊掩盖归正,肉眼只见"滚过来落定"。 */
+function buildRelayPath(start) {
+  /* 从起点斜下规划:方向左右交替,贴边就反弹,遇忙格或到底行为止 */
+  const path = [start], dirs = [];
+  let r = start.row, c = start.col;
+  let d = c >= COLS - 1 ? -1 : (c <= 0 ? 1 : (Math.random() < .5 ? 1 : -1));
+  while (r + 1 < ROWS) {
+    if (c + d < 0 || c + d >= COLS) d = -d;
+    if (c + d < 0 || c + d >= COLS) break;
+    const next = cells.find(x => x.row === r + 1 && x.col === c + d);
+    if (!next || next.busy) break;
+    path.push(next); dirs.push(d);
+    r += 1; c += d; d = -d;                          // 左右交替
+  }
+  return { path, dirs };
+}
+
+async function animPivotRelay(path, dirs) {
+  for (const c of path) c.busy = true;
+  const dur = CONFIG.顶点旋转基础时长 * Math.SQRT2;  // 180° 的重力下落用时(T∝√角度)
+  try {
+    const orig = path.map(c => c.photoIdx);          // 开链前锁定每一棒要传的照片
+    const freshIdx = pickPhoto(orig[0]);
+    await preload(photos[freshIdx]);
+    let pending = null;                              // 上一棒:已落位、待归正的旋转体
+    for (let i = 0; i < path.length - 1; i++) {
+      const from = path[i], to = path[i+1], d2 = dirs[i];
+      if (!document.body.contains(from.el) || !document.body.contains(to.el)) break;
+      const rF = rectOf(from), rT = rectOf(to);
+      /* 新旋转体载着出发格当前的照片,起转前就预先倒 180°:
+         滚完 180° 落地恰好是正像,落位不再需要任何换图动作 */
+      const { wrap, prot } = makePanel(photos[orig[i]], rF);
+      prot.querySelector("img").style.transform = "rotate(180deg)";
+      /* 旋转轴定在与落点共享的底角(按两格实际位置取中,容忍网格间隙) */
+      const gx = d2 > 0 ? (rT.left - (rF.left + rF.width)) / 2
+                        : (rF.left - (rT.left + rT.width)) / 2;
+      const gy = (rT.top - (rF.top + rF.height)) / 2;
+      prot.style.transformOrigin = d2 > 0
+        ? `calc(100% + ${gx}px) calc(100% + ${gy}px)`
+        : `${-gx}px calc(100% + ${gy}px)`;
+      prot.style.filter = "drop-shadow(0 16px 32px rgba(0,0,0,.5))";
+      /* 多米诺同帧交接:上一棒落地已是正像,底图换上同一张照片、
+         旋转体退场,正像对正像零跳变;链头则在底下露出新照片 */
+      if (pending) { swapCell(pending.cell, pending.idx); pending.wrap.remove(); }
+      else swapCell(from, freshIdx);
+      /* 贴地滚:绕右下角逆时针 / 绕左下角顺时针,永远从正下方掠过。
+         重力节奏与顶点旋转一致:θ∝t²,加速入位、落位即停 */
+      const spin = d2 > 0 ? -180 : 180;
+      const anim = prot.animate(
+        [{ transform: "rotate(0deg)" }, { transform: `rotate(${spin}deg)` }],
+        { duration: dur, easing: "cubic-bezier(.33,0,.67,.33)", fill: "forwards" });
+      prot.querySelector("img").animate(
+        [{ filter: "blur(0px)" }, { filter: "blur(2.6px)" }],
+        { duration: dur, easing: "cubic-bezier(.33,0,.67,.33)", fill: "forwards" });
+      pending = { wrap, cell: to, idx: orig[i] };
+      await anim.finished.catch(()=>{});
+    }
+    /* 最后一棒:落地已是正像,底图换上同一张照片,同帧退场零跳变 */
+    if (pending) {
+      if (document.body.contains(pending.cell.el)) swapCell(pending.cell, pending.idx);
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      pending.wrap.remove();
+    }
+  } finally {
+    const now = performance.now();
+    for (const c of path) { c.busy = false; c.lastAnim = now; }
+  }
+}
+
+/* ============ 动画三:落叶飘 ============
+   照片像贴纸失去粘性:先轻轻一沉"脱落",
+   然后微微飘向右下方,平稳坠落、渐渐透明消失,
+   底下露出新照片。全程不摇头、无往复。 */
+async function animLeaf(cell, uniform) {
+  const newIdx = pickPhoto(cell.photoIdx);
+  await preload(photos[newIdx]);
+  if (!document.body.contains(cell.el)) { cell.busy = false; return; }
+  const rect = rectOf(cell);
+  const { wrap, prot } = makePanel(photos[cell.photoIdx], rect);
+  swapCell(cell, newIdx);                    // 新照片先待在叶子下面
+  prot.style.transformOrigin = "35% 0%";     // 从上缘偏左处"脱开"
+  prot.style.filter = "drop-shadow(0 14px 26px rgba(0,0,0,.42))";
+  /* uniform:浪花模式——参数全部取定值,整阵叶子齐刷刷地飘,波前才锐利 */
+  const tilt   = uniform ? 4.5 : 3.5 + Math.random()*2.5;  // 只轻轻一倾(度),不是斜着掉
+  const driftX = uniform ? 7   : 5 + Math.random()*4;      // 被风吹出的总右移(格宽百分比)
+  const fall   = uniform ? 115 : 95 + Math.random()*35;    // 总下落距离(格高百分比)
+  const dur    = uniform ? CONFIG.落叶时长 : CONFIG.落叶时长 + Math.random()*350;
+  const anim = prot.animate([
+    { transform:"translate(0%,0%) rotateZ(0deg) rotateX(0deg) scale(1)",                                     opacity:1,   offset:0 },
+    /* 脱落瞬间:几乎垂直地轻轻一沉 */
+    { transform:`translate(.3%,3%) rotateZ(${tilt*.3}deg) rotateX(9deg) scale(.997)`,                        opacity:1,   offset:.15 },
+    /* 直落一段,风还没起 */
+    { transform:`translate(1.4%, ${fall*.3}%) rotateZ(${tilt*.55}deg) rotateX(13deg) scale(.985)`,           opacity:1,   offset:.42 },
+    /* 风起:越落越往右带,像被微风推着走 */
+    { transform:`translate(${driftX*.55}%, ${fall*.63}%) rotateZ(${tilt*.85}deg) rotateX(10deg) scale(.97)`, opacity:.8,  offset:.68 },
+    { transform:`translate(${driftX}%, ${fall}%) rotateZ(${tilt}deg) rotateX(7deg) scale(.955)`,             opacity:0,   offset:1 }
+  ], { duration:dur, easing:"cubic-bezier(.5,.12,.62,.9)", fill:"forwards" });
+  await anim.finished.catch(()=>{});
+  wrap.remove();
+  cell.busy = false;
+  cell.lastAnim = performance.now();
+}
+
+/* ============ 动画四:缓慢缩放(Ken Burns) ============
+   镜头慢慢推近一张照片再轻轻平移,像被凝视了一会儿;
+   推到头时新照片交叉淡入,底图复位。安静,是动画之间的呼吸。 */
+async function animKenBurns(cell) {
+  const newIdx = pickPhoto(cell.photoIdx);
+  await preload(photos[newIdx]);
+  if (!document.body.contains(cell.el)) { cell.busy = false; return; }
+  const img = cell.img;
+  const dur = CONFIG.缓慢缩放时长 + Math.random()*1500;
+  const scale = 1.12 + Math.random()*.08;
+  /* 平移量控制在放大出来的余量以内,不会露出格子边缘 */
+  const margin = (scale - 1) / (2*scale) * 100 * .8;
+  const dx = (Math.random()*2 - 1) * margin;
+  const dy = (Math.random()*2 - 1) * margin;
+  const zoom = img.animate([
+    { transform:"scale(1) translate(0%,0%)" },
+    { transform:`scale(${scale}) translate(${dx}%,${dy}%)` }
+  ], { duration:dur, easing:"cubic-bezier(.33,0,.55,1)", fill:"forwards" });
+  await zoom.finished.catch(()=>{});
+  if (!document.body.contains(cell.el)) { cell.busy = false; return; }
+  /* 推到头:新照片交叉淡入,然后底图复位换图 */
+  const top = document.createElement("img");
+  top.className = "base";
+  top.src = photos[newIdx];
+  top.style.opacity = "0";
+  cell.el.appendChild(top);
+  const fade = top.animate([{opacity:0},{opacity:1}],
+    {duration:900, easing:"ease-in-out", fill:"forwards"});
+  await fade.finished.catch(()=>{});
+  swapCell(cell, newIdx);
+  zoom.cancel();
+  requestAnimationFrame(() => requestAnimationFrame(() => top.remove()));
+  cell.busy = false;
+}
+
+/* ============ 开场浪花:从左上到右下的整墙翻滚 ============
+   第 1 列第 1 张开始翻滚下落,紧接着第 2 列启动……
+   一列列传过去,像浪花从左上角扫到右下角,整墙换新。 */
+let waveActive = false;
+async function waveTumble(reveal) {
+  if (waveActive || !cells.length) return false;
+  waveActive = true;
+  const gen = layoutGen;
+  /* 顺滑关键:各列面板照片先全部选好并解码好,
+     然后按精确等距的节拍启动,列与列的接替才不卡顿 */
+  let panelPicks = null;
+  let colBandPicks = null;
+  if (reveal) {
+    const avoid = new Set();
+    panelPicks = Array.from({length: COLS}, () => {
+      const i = pickPhoto(-1, avoid); avoid.add(i); return i;
+    });
+    await Promise.all(panelPicks.map(i => preload(photos[i])));
+    if (gen !== layoutGen) { waveActive = false; return false; }
+  } else {
+    /* 重复浪花:全部列沿途要换的照片一次性选好并解码好,
+       每列到点即翻,节拍精确不参差 */
+    const avoid = new Set();
+    colBandPicks = [];
+    const all = [];
+    for (let c = 0; c < COLS; c++) {
+      const picks = [];
+      for (let r = 0; r < ROWS; r++) {
+        const target = cellAt[r] && cellAt[r][c];
+        const idx = target ? pickPhoto(target.photoIdx, avoid) : -1;
+        if (idx >= 0) { avoid.add(idx); all.push(idx); }
+        picks.push(idx);
+      }
+      colBandPicks.push(picks);
+    }
+    await Promise.all(all.map(i => preload(photos[i])));
+    if (gen !== layoutGen) { waveActive = false; return false; }
+  }
+  const proms = [];
+  for (let c = 0; c < COLS; c++) {
+    proms.push(new Promise(res => setTimeout(async () => {
+      if (gen !== layoutGen) { res(); return; }   // 布局已重建,此列作废
+      /* 决不跳列:列顶若还有动画在收尾,等它真正结束再翻这一列 */
+      let cell = cellAt[0][c];
+      while (cell && cell.busy && gen === layoutGen) {
+        await new Promise(r => setTimeout(r, 120));
+        cell = cellAt[0][c];
+      }
+      if (gen !== layoutGen) { res(); return; }
+      if (cell) {
+        cell.busy = true;
+        try {
+          await animTumble(cell, { reveal, fromWave:true,
+                                   panelIdx: panelPicks ? panelPicks[c] : undefined,
+                                   bandPicks: colBandPicks ? colBandPicks[c] : undefined });
+        }
+        finally {
+          cell.busy = false;
+          cell.lastAnim = performance.now() - Math.random()*CONFIG.格子冷却*.7;
+        }
+      }
+      res();
+    }, c * CONFIG.浪花列间隔)));
+  }
+  await Promise.all(proms);
+  waveActive = false;
+  return gen === layoutGen;   // 完整地在当前布局上播完才算成功
+}
+
+/* 开场浪花的启动器:进全屏会触发窗口 resize 重建布局,
+   所以浪花统一经由这里"武装",resize 后重新武装即可,
+   黑底一直保持到浪花真正开始。 */
+let waveTimer = null;
+let schedulerStarted = false;
+function startScheduler() {
+  /* 浪花落幕后不久就开始零星动画,不让画面干等 */
+  if (!schedulerStarted) { schedulerStarted = true; scheduleNextBurst(900 + Math.random()*700); }
+}
+function armRevealWave() {
+  clearTimeout(waveTimer);
+  waveTimer = setTimeout(async () => {
+    /* 揭示之前,确保墙上这 28 张图的解码完了:
+       大照片慢硬盘也不会出现"翻开是黑的、随后弹图"的瞬间 */
+    const genBefore = layoutGen;
+    await Promise.all(cells.map(c => preload(photos[c.photoIdx])));
+    if (genBefore !== layoutGen) { if (revealPending) armRevealWave(); return; }
+    const ok = await waveTumble(true);
+    if (ok && revealPending) {
+      revealPending = false;
+      startScheduler();
+    } else if (revealPending) {
+      armRevealWave();   // 浪花被布局重建打断:重新来一遍,决不留黑格
+    }
+  }, 900);
+}
+
+/* ================= 调度:安静片刻,then 一阵动画 ================= */
+function eligibleCells() {
+  const now = performance.now();
+  return cells.filter(c => !c.busy && now - c.lastAnim > CONFIG.格子冷却);
+}
+
+/* 空间协调:候选格必须离所有正在动的格子足够远(棋盘距离≥2),
+   避免两个动画贴着脸同时动、互相穿插"打架" */
+function farFromBusy(pool) {
+  const busy = cells.filter(c => c.busy);
+  if (!busy.length) return pool;
+  const far = pool.filter(c =>
+    busy.every(b => Math.max(Math.abs(b.row - c.row), Math.abs(b.col - c.col)) >= 2));
+  return far.length ? far : [];
+}
+
+async function runTumble() {
+  /* 翻滚可能纵穿多行:要求左右邻列此刻无动画 */
+  let pool = eligibleCells();
+  const busy = cells.filter(c => c.busy);
+  pool = pool.filter(c => busy.every(b => Math.abs(b.col - c.col) >= 2));
+  pool = pool.filter(c => c.row < ROWS - 1);  // 已在最底行:没有下翻余地,不参与
+  if (!pool.length) return;
+  const cell = pool[Math.floor(Math.random()*pool.length)];
+  /* 不翻出屏幕:距离随机,最远翻到最底行就停 */
+  const maxSteps = ROWS - 1 - cell.row;
+  const n = Math.random() < CONFIG.翻滚到底概率 ? maxSteps
+          : 1 + Math.floor(Math.random()*maxSteps);
+  cell.busy = true;
+  try { await animTumble(cell, { maxFlips: n }); } finally {
+    cell.busy = false; cell.lastAnim = performance.now();
+  }
+}
+
+async function runTumbleH() {
+  /* 横向翻滚会横穿多列:要求上下邻行此刻无动画 */
+  let pool = eligibleCells();
+  const busy = cells.filter(c => c.busy);
+  pool = pool.filter(c => busy.every(b => Math.abs(b.row - c.row) >= 2));
+  if (!pool.length) return;
+  const cell = pool[Math.floor(Math.random()*pool.length)];
+  cell.busy = true;
+  try { await animTumbleH(cell); } finally {
+    cell.busy = false; cell.lastAnim = performance.now();
+  }
+}
+
+function runPivot() {
+  const pool = farFromBusy(eligibleCells());
+  if (!pool.length) return;
+  /* 一定概率升级成"顶点接力":至少能传两棒才值得开链 */
+  if (Math.random() < CONFIG.顶点接力概率) {
+    const starters = pool.filter(c => c.row <= ROWS - 3);
+    if (starters.length) {
+      const start = starters[Math.floor(Math.random()*starters.length)];
+      const { path, dirs } = buildRelayPath(start);
+      if (path.length >= 3) { animPivotRelay(path, dirs); return; }
+    }
+  }
+  const cell = pool[Math.floor(Math.random()*pool.length)];
+  cell.busy = true;
+  animPivot(cell);
+}
+
+/* 落叶专场:Apple TV 里落叶总是好几格同时飘、且独占舞台 ——
+   只在场上完全安静时成阵出现,飘完之前不安排任何其他动画 */
+let leafBurstUntil = 0;
+function runLeafBurst() {
+  const pool = eligibleCells();
+  if (!pool.length) return;
+  const want = Math.min(pool.length, 3 + Math.floor(Math.random()*3));  // 3~5 格
+  const shuffled = pool.slice().sort(() => Math.random() - .5);
+  const picked = [];
+  for (const c of shuffled) {
+    if (picked.every(p => Math.max(Math.abs(p.row-c.row), Math.abs(p.col-c.col)) >= 2)) {
+      picked.push(c);
+      if (picked.length >= want) break;
+    }
+  }
+  if (!picked.length) return;
+  leafBurstUntil = performance.now() + CONFIG.落叶时长 + 1100;
+  for (const cell of picked) {
+    cell.busy = true;
+    setTimeout(() => animLeaf(cell), Math.random()*140);   // 几乎同时起飘
+  }
+}
+
+function runKenBurns() {
+  const pool = farFromBusy(eligibleCells());
+  if (!pool.length) return;
+  const cell = pool[Math.floor(Math.random()*pool.length)];
+  cell.busy = true;
+  animKenBurns(cell);
+}
+
+function pickAnimRunner() {
+  /* 落叶不参与散场:它只以"落叶专场"的形式成阵出现(见 runLeafBurst) */
+  const w = CONFIG.动画比例;
+  const total = (w.翻滚||0) + (w.横向翻滚||0) + (w.顶点旋转||0) + (w.缓慢缩放||0);
+  let r = Math.random() * (total || 1);
+  if ((r -= (w.翻滚||0)) < 0) return runTumble;
+  if ((r -= (w.横向翻滚||0)) < 0) return runTumbleH;
+  if ((r -= (w.顶点旋转||0)) < 0) return runPivot;
+  return runKenBurns;
+}
+
+function scheduleNextBurst(delayMs) {
+  const idle = (delayMs != null) ? delayMs
+             : CONFIG.安静最短 + Math.random()*(CONFIG.安静最长-CONFIG.安静最短);
+  setTimeout(() => {
+    /* 浪花期间让路,之后 600ms 内快速恢复,不空等 */
+    if (document.hidden || waveActive || waveQueued || leafWaveQueued) { scheduleNextBurst(600); return; }
+    /* 落叶专场独占舞台:飘完之前不开新一阵 */
+    if (performance.now() < leafBurstUntil) { scheduleNextBurst(500); return; }
+    /* 场上完全安静时,按落叶权重抽签:这一阵是否为"落叶专场" */
+    const lw = CONFIG.动画比例;
+    const totalW = (lw.翻滚||0)+(lw.横向翻滚||0)+(lw.顶点旋转||0)+(lw.落叶||0)+(lw.缓慢缩放||0);
+    if (!cells.some(c => c.busy) && !fx.children.length &&
+        Math.random() * (totalW || 1) < (lw.落叶||0)) {
+      runLeafBurst();
+      scheduleNextBurst();
+      return;
+    }
+    const [nMin, nMax] = CONFIG.每阵动画数;
+    const n = nMin + Math.floor(Math.random()*(nMax-nMin+1));
+    let delay = 0;
+    for (let i = 0; i < n; i++) {
+      const runner = pickAnimRunner();
+      setTimeout(runner, delay);
+      const [sMin, sMax] = CONFIG.阵内间隔;
+      delay += sMin + Math.random()*(sMax-sMin);
+    }
+    scheduleNextBurst();
+  }, idle);
+}
+
+/* 每隔约 N 分钟:先礼貌地等场上动画收尾,再来一次全场浪花大更替 */
+let waveQueued = false;
+let waveIntervalId = null;
+function armRepeatWaveInterval() {
+  clearInterval(waveIntervalId);
+  if (CONFIG.浪花重复分钟 > 0) {
+    waveIntervalId = setInterval(() => { if (!document.hidden) requestRepeatWave(); },
+                                 CONFIG.浪花重复分钟 * 60000);
+  }
+}
+async function requestRepeatWave() {
+  if (!started || waveQueued || leafWaveQueued || waveActive || revealPending) return;
+  waveQueued = true;   // 排队旗立起,调度器立即停发新的局部动画
+  /* 等场上动画真正结束(调度已暂停,必然收敛;15 秒只是保险丝) */
+  const t0 = performance.now();
+  while ((fx.children.length || cells.some(c => c.busy)) && performance.now() - t0 < 15000) {
+    await new Promise(r => setTimeout(r, 150));
+  }
+  await waveTumble(false);
+  waveQueued = false;
+}
+
+/* 每隔约 N 分钟:一场从左上角到右下角的"落叶飘"全场大更替。
+   按斜线(行+列)逐批起飞,像一阵风从左上扫向右下;
+   启动时刻错峰半分钟,避免和翻滚浪花撞在同一秒 */
+let leafWaveQueued = false;
+let leafWaveOffsetId = null, leafWaveIntervalId = null;
+function armLeafWaveInterval() {
+  clearTimeout(leafWaveOffsetId); clearInterval(leafWaveIntervalId);
+  if (CONFIG.落叶浪花分钟 > 0) {
+    leafWaveOffsetId = setTimeout(() => {
+      if (!document.hidden) requestLeafWave();
+      leafWaveIntervalId = setInterval(() => { if (!document.hidden) requestLeafWave(); },
+                                       CONFIG.落叶浪花分钟 * 60000);
+    }, CONFIG.落叶浪花分钟 * 60000 + 30000);
+  }
+}
+async function requestLeafWave() {
+  if (!started || leafWaveQueued || waveQueued || waveActive || revealPending) return;
+  leafWaveQueued = true;   // 排队旗立起,调度器立即停发新的局部动画
+  /* 等场上动画真正结束(调度已暂停,必然收敛;15 秒只是保险丝) */
+  const t0 = performance.now();
+  while ((fx.children.length || cells.some(c => c.busy)) && performance.now() - t0 < 15000) {
+    await new Promise(r => setTimeout(r, 150));
+  }
+  const gen = layoutGen;
+  const jobs = [];
+  for (const cell of cells) {
+    /* 决不跳格:空闲的当场占住;还在动画的,到起飞时刻等它结束再飘 */
+    const wasBusy = cell.busy;
+    if (!wasBusy) cell.busy = true;
+    /* 严格按斜线顺序起飞,零随机:波前从左上到右下才看得清 */
+    const delay = (cell.row + cell.col) * CONFIG.落叶浪花斜向间隔;
+    jobs.push(new Promise(res => setTimeout(async () => {
+      if (gen !== layoutGen || !document.body.contains(cell.el)) {
+        if (!wasBusy) cell.busy = false;
+        res(); return;
+      }
+      while (wasBusy && cell.busy && gen === layoutGen) {
+        await new Promise(r => setTimeout(r, 120));
+      }
+      if (gen !== layoutGen || !document.body.contains(cell.el)) { res(); return; }
+      cell.busy = true;
+      await animLeaf(cell, true);
+      res();
+    }, delay)));
+  }
+  await Promise.all(jobs);
+  leafWaveQueued = false;
+}
+
+/* ================= 启动界面 / 照片来源 ================= */
+const picker = document.getElementById("picker");
+const dirInput = document.getElementById("dirInput");
+const IMG_RE = /\.(jpe?g|png|webp|bmp|gif|jfif)$/i;
+
+document.getElementById("btnPick").onclick = () => TAURI ? tauriPickFolder() : dirInput.click();
+document.getElementById("btnDemo").onclick = () => beginShow(null);
+
+/* ============ 开场页:暗化拼贴背景 + 主题卡片 ============ */
+function setDemoTheme(name) {
+  demoTheme = name;
+  try { localStorage.setItem(LS_KEY + ".theme", name); } catch (e) {}
+  document.querySelectorAll("#pickerThemes .tcard, #settings .theme").forEach(b =>
+    b.classList.toggle("on", b.dataset.theme === name));
+  /* 播放中切主题:整墙浪花换成新主题的照片 */
+  if (started) {
+    const oldPhotos = photos;
+    photos = makeDemoPhotos(40, name);
+    isDemo = true;
+    recentQueue.length = 0;
+    document.body.classList.remove("panelopen");
+    requestRepeatWave();
+    releaseOldPhotoUrls(oldPhotos);
+  }
+}
+(function buildLanding() {
+  const bg = document.getElementById("pickerBg");
+  for (let i = 0; i < 9; i++) {
+    const im = document.createElement("img");
+    im.src = makeDemoPhotos(1, DEMO_THEME_NAMES[i % 3])[0];
+    bg.appendChild(im);
+  }
+  const holder = document.getElementById("pickerThemes");
+  for (const name of DEMO_THEME_NAMES) {
+    const card = document.createElement("button");
+    card.className = "tcard" + (name === demoTheme ? " on" : "");
+    card.dataset.theme = name;
+    const im = document.createElement("img");
+    im.src = makeDemoPhotos(1, name)[0];
+    const cap = document.createElement("span");
+    cap.textContent = name;
+    card.append(im, cap);
+    card.onclick = () => setDemoTheme(name);
+    holder.appendChild(card);
+  }
+})();
+
+/* 换照片库后,旧的 blob 地址不能立即释放(墙上和飞行中的图还在用),
+   等动画全部退场、且没有任何格子还显示旧图时统一回收 */
+function releaseOldPhotoUrls(oldUrls) {
+  const current = new Set(photos);
+  const doomed = new Set(oldUrls.filter(u => u.startsWith("blob:") && !current.has(u)));
+  if (!doomed.size) return;
+  const tryFree = () => {
+    /* 不看 busy(缓慢缩放等常年占格但并不引用旧图):
+       只要没有飞行中的面板、也没有格子还显示旧图,就可安全回收 */
+    const inUse = fx.children.length || cells.some(c => doomed.has(c.img.src));
+    if (inUse) { setTimeout(tryFree, 1500); return; }
+    for (const u of doomed) { URL.revokeObjectURL(u); decoded.delete(u); }
+  };
+  setTimeout(tryFree, 3000);
+}
+
+dirInput.onchange = () => {
+  const urls = [...dirInput.files]
+    .filter(f => IMG_RE.test(f.name))
+    .map(f => URL.createObjectURL(f));
+  if (!urls.length) return;
+  if (started) {
+    /* 播放中从设置面板添加:换成新照片库,来一场浪花全部刷新 */
+    const oldPhotos = photos;
+    photos = urls.slice();
+    isDemo = false;
+    recentQueue.length = 0;
+    document.body.classList.remove("panelopen");
+    requestRepeatWave();
+    releaseOldPhotoUrls(oldPhotos);
+  } else {
+    beginShow(urls);
+  }
+};
+
+/* 拖入文件夹或图片 */
+picker.addEventListener("dragover", e => { e.preventDefault(); picker.classList.add("drag"); });
+picker.addEventListener("dragleave", () => picker.classList.remove("drag"));
+picker.addEventListener("drop", async e => {
+  e.preventDefault(); picker.classList.remove("drag");
+  const files = [];
+  const walk = entry => new Promise(res => {
+    if (entry.isFile) entry.file(f => { files.push(f); res(); }, res);
+    else if (entry.isDirectory) {
+      const rd = entry.createReader();
+      const readAll = () => rd.readEntries(async es => {
+        if (!es.length) return res();
+        for (const en of es) await walk(en);
+        readAll();
+      }, res);
+      readAll();
+    } else res();
+  });
+  const items = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  for (const en of items) await walk(en);
+  const urls = files.filter(f => IMG_RE.test(f.name)).map(f => URL.createObjectURL(f));
+  if (urls.length) beginShow(urls);
+});
+
+function beginShow(list) {
+  picker.style.display = "none";
+  document.body.classList.remove("picking");
+  setAppFullscreen(true);
+  start(list);
+}
+
+/* ================= Tauri 桥 ================= */
+const TAURI = !!window.__TAURI__;
+
+function setAppFullscreen(on) {
+  if (TAURI) { window.__TAURI__.window.getCurrentWindow().setFullscreen(on).catch(() => {}); return; }
+  if (on) { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {}); }
+  else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+function toggleAppFullscreen() {
+  if (TAURI) {
+    const win = window.__TAURI__.window.getCurrentWindow();
+    win.isFullscreen().then(f => win.setFullscreen(!f)).catch(() => {});
+  } else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+}
+
+const prep = document.getElementById("prep");
+function showPrep(done, total) {
+  prep.style.display = "flex";
+  prep.querySelector(".txt").textContent = total ? `正在准备照片 ${done} / ${total}` : "正在扫描文件夹…";
+}
+function hidePrep() { prep.style.display = "none"; }
+
+let preparing = false;
+async function tauriPickFolder() {
+  const dir = await window.__TAURI__.dialog.open({ directory: true, title: "选择照片文件夹" }).catch(() => null);
+  if (dir) prepareFolder(dir);
+}
+/* Rust 扫描 + 多线程缩略图:每就绪一张推一张,凑够大半屏就先开播,不干等全量 */
+async function prepareFolder(dir) {
+  if (preparing) return;
+  preparing = true;
+  const { invoke, convertFileSrc } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+  const wasStarted = started;
+  if (!wasStarted) showPrep(0, 0);
+  const ready = [];
+  let startedHere = false;
+  const unProg = await listen("thumb-progress", e => { if (!wasStarted && !startedHere) showPrep(e.payload.done, e.payload.total); });
+  const unReady = await listen("thumb-ready", e => {
+    const u = convertFileSrc(e.payload);
+    ready.push(u);
+    if (!wasStarted) {
+      if (!startedHere && ready.length >= Math.max(12, Math.ceil(CONFIG.行数 * CONFIG.列数 * 0.75))) {
+        startedHere = true; hidePrep(); beginShow(ready.slice());
+      } else if (startedHere && started) photos.push(u);
+    }
+  });
+  try {
+    const all = await invoke("prepare_folder", { dir });
+    const urls = all.map(convertFileSrc);
+    if (!urls.length) throw new Error("empty");
+    if (!wasStarted) {
+      if (startedHere) { photos = urls; }            /* 已提前开播:补齐完整清单 */
+      else { hidePrep(); beginShow(urls); }
+    } else {
+      /* 播放中换库:整墙浪花刷新 */
+      const oldPhotos = photos;
+      photos = urls; isDemo = false; recentQueue.length = 0;
+      document.body.classList.remove("panelopen");
+      requestRepeatWave();
+      releaseOldPhotoUrls(oldPhotos);
+    }
+  } catch (err) {
+    showPrep(0, 0);
+    prep.querySelector(".txt").textContent = "没有找到可用的照片";
+    setTimeout(hidePrep, 2400);
+  } finally {
+    preparing = false;
+    unProg(); unReady();
+  }
+}
+if (TAURI) {
+  /* Tauri 拖拽带真实路径,直接交给后端(文件夹或单张图都行) */
+  window.__TAURI__.event.listen("tauri://drag-drop", e => {
+    const p = e.payload && e.payload.paths && e.payload.paths[0];
+    picker.classList.remove("drag");
+    if (p) prepareFolder(p);
+  }).catch(() => {});
+  window.__TAURI__.event.listen("tauri://drag-enter", () => { if (!started) picker.classList.add("drag"); }).catch(() => {});
+  window.__TAURI__.event.listen("tauri://drag-leave", () => picker.classList.remove("drag")).catch(() => {});
+}
+
+/* ================= input / host bridge ================= */
+function exitApp() {
+  try { if (window.chrome && window.chrome.webview) { window.chrome.webview.postMessage("exit"); return; } } catch(e){}
+  /* 浏览器里 Esc 由系统处理(退出全屏) */
+}
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (TAURI) { setAppFullscreen(false); return; }   /* 应用里 Esc = 退全屏 */
+  exitApp();
+});
+
+const toast = document.getElementById("toast");
+let cursorTimer = null;
+document.addEventListener("mousemove", () => {
+  if (!started) return;
+  document.body.classList.add("showcursor");
+  toast.classList.add("show");
+  clearTimeout(cursorTimer);
+  cursorTimer = setTimeout(() => {
+    if (document.body.classList.contains("panelopen")) return;   // 面板开着时不藏光标
+    document.body.classList.remove("showcursor");
+    toast.classList.remove("show");
+  }, 2200);
+});
+
+/* ================= 运行时设置面板 ================= */
+const gear = document.getElementById("gear");
+const panel = document.getElementById("settings");
+const $ = id => document.getElementById(id);
+const fmt1 = v => (Math.round(v*10)/10).toString();
+const weightSliders = [["sW1","oW1","翻滚"],["sW2","oW2","横向翻滚"],["sW3","oW3","顶点旋转"],["sW4","oW4","落叶"],["sW5","oW5","缓慢缩放"]];
+
+function syncPanel() {
+  $("sRows").value = CONFIG.行数;          $("oRows").textContent = CONFIG.行数;
+  $("sCols").value = CONFIG.列数;          $("oCols").textContent = CONFIG.列数;
+  $("sQmin").value = CONFIG.安静最短/1000; $("oQmin").textContent = fmt1(CONFIG.安静最短/1000);
+  $("sQmax").value = CONFIG.安静最长/1000; $("oQmax").textContent = fmt1(CONFIG.安静最长/1000);
+  $("sBurst").value = CONFIG.每阵动画数[1]; $("oBurst").textContent = CONFIG.每阵动画数[1];
+  $("sWave").value = CONFIG.浪花重复分钟;  $("oWave").textContent = CONFIG.浪花重复分钟 > 0 ? CONFIG.浪花重复分钟 : "关";
+  $("sLeaf").value = CONFIG.落叶浪花分钟;  $("oLeaf").textContent = CONFIG.落叶浪花分钟 > 0 ? CONFIG.落叶浪花分钟 : "关";
+  $("sKb").value = CONFIG.缓慢缩放时长/1000; $("oKb").textContent = fmt1(CONFIG.缓慢缩放时长/1000);
+  for (const [sid, oid, key] of weightSliders) {
+    const v = Math.round((CONFIG.动画比例[key] || 0) * 10);
+    $(sid).value = v; $(oid).textContent = v;
+  }
+}
+
+gear.onclick = () => {
+  document.body.classList.toggle("panelopen");
+  if (document.body.classList.contains("panelopen")) syncPanel();
+};
+/* 点面板外的任何地方关闭面板 */
+document.addEventListener("pointerdown", e => {
+  if (!document.body.classList.contains("panelopen")) return;
+  if (panel.contains(e.target) || gear.contains(e.target)) return;
+  document.body.classList.remove("panelopen");
+});
+
+/* 改行列数:稍等半拍再重建,拖动滑块过程中不闪屏 */
+let gridRebuildTimer = null;
+function applyGridChange() {
+  clearTimeout(gridRebuildTimer);
+  gridRebuildTimer = setTimeout(() => {
+    if (!started) return;
+    ROWS = CONFIG.行数; COLS = CONFIG.列数;
+    buildLayout(revealPending);
+    if (revealPending) armRevealWave();
+  }, 400);
+}
+
+$("sRows").oninput = e => { CONFIG.行数 = +e.target.value; $("oRows").textContent = CONFIG.行数; saveSettings(); applyGridChange(); };
+$("sCols").oninput = e => { CONFIG.列数 = +e.target.value; $("oCols").textContent = CONFIG.列数; saveSettings(); applyGridChange(); };
+$("sQmin").oninput = e => {
+  CONFIG.安静最短 = Math.round(+e.target.value * 1000);
+  if (CONFIG.安静最长 < CONFIG.安静最短) CONFIG.安静最长 = CONFIG.安静最短;
+  syncPanel(); saveSettings();
+};
+$("sQmax").oninput = e => {
+  CONFIG.安静最长 = Math.round(+e.target.value * 1000);
+  if (CONFIG.安静最短 > CONFIG.安静最长) CONFIG.安静最短 = CONFIG.安静最长;
+  syncPanel(); saveSettings();
+};
+$("sBurst").oninput = e => {
+  CONFIG.每阵动画数[1] = +e.target.value;
+  CONFIG.每阵动画数[0] = Math.min(CONFIG.每阵动画数[0], CONFIG.每阵动画数[1]);
+  $("oBurst").textContent = CONFIG.每阵动画数[1]; saveSettings();
+};
+$("sWave").oninput = e => {
+  CONFIG.浪花重复分钟 = +e.target.value;
+  $("oWave").textContent = CONFIG.浪花重复分钟 > 0 ? CONFIG.浪花重复分钟 : "关";
+  saveSettings(); armRepeatWaveInterval();
+};
+$("sLeaf").oninput = e => {
+  CONFIG.落叶浪花分钟 = +e.target.value;
+  $("oLeaf").textContent = CONFIG.落叶浪花分钟 > 0 ? CONFIG.落叶浪花分钟 : "关";
+  saveSettings(); armLeafWaveInterval();
+};
+$("sKb").oninput = e => {
+  CONFIG.缓慢缩放时长 = Math.round(+e.target.value * 1000);
+  $("oKb").textContent = fmt1(CONFIG.缓慢缩放时长/1000); saveSettings();
+};
+for (const [sid, oid, key] of weightSliders) {
+  $(sid).oninput = e => {
+    CONFIG.动画比例[key] = +e.target.value / 10;
+    $(oid).textContent = e.target.value; saveSettings();
+  };
+}
+$("btnWaveNow").onclick = () => { document.body.classList.remove("panelopen"); requestRepeatWave(); };
+$("btnAddPhotos").onclick = () => TAURI ? tauriPickFolder() : dirInput.click();
+$("btnFullscreen").onclick = () => toggleAppFullscreen();
+$("btnReset").onclick = () => {
+  for (const k of Object.keys(DEFAULTS)) {
+    if (k === "动画比例") Object.assign(CONFIG.动画比例, DEFAULTS.动画比例);
+    else CONFIG[k] = Array.isArray(DEFAULTS[k]) ? DEFAULTS[k].slice() : DEFAULTS[k];
+  }
+  saveSettings(); syncPanel(); armRepeatWaveInterval(); armLeafWaveInterval(); applyGridChange();
+  markPreset("平衡默认");
+};
+$("btnClearCache").onclick = async () => {
+  if (!TAURI) return;
+  try {
+    const mb = await window.__TAURI__.core.invoke("clear_thumb_cache");
+    $("btnClearCache").textContent = "已清理 " + mb + " MB";
+    setTimeout(() => { $("btnClearCache").textContent = "清理缩略图缓存"; }, 2200);
+  } catch (e) {}
+};
+if (!TAURI) $("btnClearCache").style.display = "none";
+
+/* 一键预设:只动节奏与动画配比,不动网格行列 */
+const PRESETS = {
+  安静相册: { 安静最短: 4000, 安静最长: 9000, 每阵动画数: [1, 2], 浪花重复分钟: 5, 落叶浪花分钟: 8, 缓慢缩放时长: 11000,
+             动画比例: { 翻滚: .1, 横向翻滚: .1, 顶点旋转: .1, 落叶: .3, 缓慢缩放: .4 } },
+  平衡默认: null,   /* 即出厂默认 */
+  活跃派对: { 安静最短: 800, 安静最长: 2200, 每阵动画数: [2, 4], 浪花重复分钟: 2, 落叶浪花分钟: 5, 缓慢缩放时长: 6000,
+             动画比例: { 翻滚: .3, 横向翻滚: .2, 顶点旋转: .3, 落叶: .1, 缓慢缩放: .1 } },
+  电影质感: { 安静最短: 3000, 安静最长: 7000, 每阵动画数: [1, 2], 浪花重复分钟: 6, 落叶浪花分钟: 4, 缓慢缩放时长: 13000,
+             动画比例: { 翻滚: .1, 横向翻滚: 0, 顶点旋转: .1, 落叶: .3, 缓慢缩放: .5 } },
+};
+const PRESET_KEYS = ["安静最短","安静最长","每阵动画数","浪花重复分钟","落叶浪花分钟","缓慢缩放时长","动画比例"];
+function markPreset(name) {
+  document.querySelectorAll("#settings .preset").forEach(b =>
+    b.classList.toggle("on", b.dataset.preset === name));
+  try {
+    if (name) localStorage.setItem(LS_KEY + ".preset", name);
+    else localStorage.removeItem(LS_KEY + ".preset");
+  } catch (e) {}
+}
+function applyPreset(name) {
+  const p = PRESETS[name] || {};
+  for (const k of PRESET_KEYS) {
+    const v = (k in p) ? p[k] : DEFAULTS[k];
+    if (k === "动画比例") Object.assign(CONFIG.动画比例, v);
+    else CONFIG[k] = Array.isArray(v) ? v.slice() : v;
+  }
+  saveSettings(); syncPanel(); armRepeatWaveInterval(); armLeafWaveInterval();
+  markPreset(name);
+}
+document.querySelectorAll("#settings .preset").forEach(b => { b.onclick = () => applyPreset(b.dataset.preset); });
+/* 高级设置里手动拖过滑杆,就不再属于任何预设 */
+$("adv").addEventListener("input", () => markPreset(null));
+try { markPreset(localStorage.getItem(LS_KEY + ".preset")); } catch (e) {}
+
+/* 设置面板的主题切换行 */
+document.querySelectorAll("#settings .theme").forEach(b => {
+  b.classList.toggle("on", b.dataset.theme === demoTheme);
+  b.onclick = () => setDemoTheme(b.dataset.theme);
+});
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (!started) return;
+    /* 开场浪花未完成时(比如进全屏触发的 resize):
+       重建后仍保持全黑,并重新武装浪花 —— 黑底开场不被破坏 */
+    buildLayout(revealPending);
+    if (revealPending) armRevealWave();
+  }, 350);
+});
+
+/* ================= boot ================= */
+function start(list) {
+  if (started) return;
+  started = true;
+  /* 先立好"开场必须黑"的旗子:照片较大时预加载需要时间,
+     其间进全屏触发的 resize 也会按黑底重建,不会闪照片 */
+  revealPending = !!CONFIG.开场浪花;
+  isDemo = !(list && list.length);
+  photos = isDemo ? makeDemoPhotos(40, demoTheme) : list.slice();
+  const warm = photos.slice(0, Math.min(photos.length, 80));
+  Promise.all(warm.map(preload)).then(() => {
+    buildLayout(revealPending);
+    if (CONFIG.开场浪花) {
+      armRevealWave();          // 全黑起步,浪花点亮整墙
+    } else {
+      setTimeout(startScheduler, 1600);
+    }
+    armRepeatWaveInterval();
+    armLeafWaveInterval();
+  });
+}
+window.__setPhotos = list => { picker.style.display = "none"; document.body.classList.remove("picking"); start(list); };
+if (window.PHOTOS && window.PHOTOS.length) {
+  picker.style.display = "none";
+  document.body.classList.remove("picking");
+  start(window.PHOTOS);
+}
+</script>
+</body>
+</html>

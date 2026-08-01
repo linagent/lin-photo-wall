@@ -1,0 +1,58 @@
+name: build-windows
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install Tauri CLI
+        uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall tauri-cli@^2 --no-confirm
+
+      - name: Build
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: Collect outputs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "src-tauri/target/${{ matrix.target }}/release/photo-wall.exe" "dist/PhotoWall-${{ matrix.arch }}-portable.exe"
+          Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe" | ForEach-Object {
+            Copy-Item $_.FullName "dist/PhotoWall-${{ matrix.arch }}-setup.exe"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoWall-${{ matrix.arch }}
+          path: dist/*
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
