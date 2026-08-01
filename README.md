@@ -4,6 +4,10 @@
 
 > PhotoWall 是独立开源项目，与 Apple Inc. 无隶属或合作关系。
 
+<p align="center">
+  <img src=".github/assets/photowall-preview.png" width="380" alt="PhotoWall 动态照片墙与播放控制界面">
+</p>
+
 [下载最新版](https://github.com/linagent/lin-photo-wall/releases/latest) · [查看构建状态](https://github.com/linagent/lin-photo-wall/actions)
 
 ## 功能亮点
